@@ -1,0 +1,513 @@
+setwd("...")
+getwd()
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocManager")
+BiocManager::version()
+# If your bioconductor version is previous to 3.9, see the section bellow
+
+## Required
+BiocManager::install(c("AUCell", "RcisTarget"))
+BiocManager::install(c("GENIE3")) # Optional. Can be replaced by GRNBoost
+
+## Optional (but highly recommended):
+# To score the network on cells (i.e. run AUCell):
+BiocManager::install(c("zoo", "mixtools", "rbokeh"))
+# For various visualizations and perform t-SNEs:
+BiocManager::install(c("DT", "NMF", "pheatmap", "R2HTML", "Rtsne"))
+# To support paralell execution (not available in Windows):
+BiocManager::install(c("doMC", "doRNG"))
+# To export/visualize in http://scope.aertslab.org
+if (!requireNamespace("devtools", quietly = TRUE)) install.packages("devtools")
+devtools::install_github("aertslab/SCopeLoomR", build_vignettes = TRUE)
+
+BiocManager::install(c("GENIE3"))
+BiocManager :: install ("AUCell","1.4.3")
+packageVersion("AUCell")
+packageVersion("RcisTarget")
+packageVersion("GENIE3")
+
+if (!requireNamespace("devtools", quietly = TRUE)) install.packages("devtools")
+devtools::install_github("aertslab/SCENIC") 
+packageVersion("SCENIC")
+
+##1, For human:
+dbFiles <- c("https://resources.aertslab.org/cistarget/databases/homo_sapiens/hg19/refseq_r45/mc9nr/gene_based/hg19-500bp-upstream-7species.mc9nr.feather",
+             "https://resources.aertslab.org/cistarget/databases/homo_sapiens/hg19/refseq_r45/mc9nr/gene_based/hg19-tss-centered-10kb-7species.mc9nr.feather")
+# mc9nr: Motif collection version 9: 24k motifs
+##download
+dir.create("cisTarget_databases");  
+setwd("cisTarget_databases")
+for(featherURL in dbFiles)
+{
+  download.file(featherURL, destfile=basename(featherURL)) # saved in current dir
+}
+
+library(foreach)
+library(Seurat)
+library(tidyverse)
+library(patchwork)
+library(SCENIC)
+library(AUCell)
+rm(list=ls())
+
+dir.create("SCENIC")
+dir.create("SCENIC/int")
+AdipocyteRecluster<- readRDS("...")
+##准备细胞meta信息
+cellInfo <- data.frame(AdipocyteRecluster@meta.data)
+colnames(cellInfo)[which(colnames(cellInfo)=="orig.ident")] <- "sample"
+colnames(cellInfo)[which(colnames(cellInfo)=="RNA_snn_res.0.15")] <- "cluster"
+colnames(cellInfo)[which(colnames(cellInfo)=="BC_Subtype")] <- "celltype"
+cellInfo <- cellInfo[,c("sample","cluster","celltype")]
+
+#subcell <- sample(colnames(scRNA),1000)
+scRNAsub <- scRNA[,subcell]
+saveRDS(scRNAsub, "scRNAsub.rds")
+
+exprMat <- as.matrix(AdipocyteRecluster@assays$RNA@counts) 
+
+mydbs <- c("hg38__refseq-r80__500bp_up_and_100bp_down_tss.mc9nr.feather",
+           "hg38__refseq-r80__10kb_up_and_down_tss.mc9nr.feather")
+names(mydbs) <- c("500bp", "10kb")
+#load in the motifannotation this will load it into your environment but as the name in which is given to the list argument
+data(list="motifAnnotations_hgnc_v9", package="RcisTarget")
+#rename the motif annnotion by attributing it to the variable that is in the error
+motifAnnotations_hgnc <- motifAnnotations_hgnc_v9
+
+scenicOptions <- initializeScenic(org="hgnc", 
+                                  nCores=1,
+                                  dbDir="...", 
+                                  dbs = mydbs)
+
+genesKept <- geneFiltering(exprMat, scenicOptions, 
+                           minCountsPerGene = 3 * 0.01 * ncol(exprMat), 
+                           minSamples = ncol(exprMat) * 0.01)
+exprMat_filtered <- exprMat[genesKept, ]
+
+runCorrelation(exprMat_filtered, scenicOptions)
+exprMat_filtered_log <- log2(exprMat_filtered+1)
+runGenie3(exprMat_filtered_log, scenicOptions, nParts = 20)
+runSCENIC_1_coexNetwork2modules(scenicOptions)
+scenicOptions@settings$dbs 
+
+devtools::install_github("aertslab/SCENIC@v1.1.1")
+runSCENIC_2_createRegulons(scenicOptions)
+exprMat_all <- as.matrix(AdipocyteRecluster@assays$RNA@counts)
+exprMat_all <- log2(exprMat_all+1)
+runSCENIC_3_scoreCells(scenicOptions, exprMat=exprMat_all)
+runSCENIC_4_aucell_binarize(scenicOptions, exprMat=exprMat_all)
+
+AUCmatrix <- readRDS("int/3.4_regulonAUC.Rds")
+AUCmatrix <- AUCmatrix@assays@data@listData$AUC
+AUCmatrix <- data.frame(t(AUCmatrix), check.names=F)
+RegulonName_AUC <- colnames(AUCmatrix)
+RegulonName_AUC <- gsub(' \\(','_',RegulonName_AUC)
+RegulonName_AUC <- gsub('\\)','',RegulonName_AUC)
+colnames(AUCmatrix) <- RegulonName_AUC
+
+pbmcPreAdipocytecluster<- readRDS("...")
+scRNAauc <- AddMetaData(AdipocyteRecluster, AUCmatrix)
+scRNAauc@assays$integrated <- NULL
+saveRDS(scRNAauc,'scRNAauc.rds')
+
+BINmatrix <- readRDS("int/4.1_binaryRegulonActivity.Rds")
+BINmatrix <- data.frame(t(BINmatrix), check.names=F)
+RegulonName_BIN <- colnames(BINmatrix)
+RegulonName_BIN <- gsub(' \\(','_',RegulonName_BIN)
+RegulonName_BIN <- gsub('\\)','',RegulonName_BIN)
+colnames(BINmatrix) <- RegulonName_BIN
+scRNAbin <- AddMetaData(AdipocyteRecluster, BINmatrix)
+scRNAbin@assays$integrated <- NULL
+saveRDS(scRNAbin, 'scRNAbin.rds')
+
+dir.create('scenic_seurat2.0')
+#FeaturePlot
+p1 = FeaturePlot(scRNAauc, features=c('PPARG_18g',"CEBPB_147g","CEBPD_137g","CEBPG_10g","SREBF1_173g"), label=T, reduction = 'umap')
+p2 = FeaturePlot(scRNAbin, features=c('PPARG_18g',"CEBPB_147g","CEBPD_137g","CEBPG_10g","SREBF1_173g"), label=T, reduction = 'umap')
+p3 = DimPlot(scRNA, reduction = 'umap', group.by = "celltype_Monaco", label=T)
+plotc = p1|p2
+ggsave('scenic_seurat/CEBPB_extended_2290g.png', plotc, width=14 ,height=4)
+
+
+DotPlot(scRNAauc, features = c('PPARG_18g',"CEBPB_147g","CEBPD_137g","CEBPG_10g","SREBF1_173g")) + RotatedAxis() 
+#RidgePlot&VlnPlot
+p1 = RidgePlot(scRNAauc, features = "CEBPB_147g", group.by="RNA_snn_res.0.15") + 
+  theme(legend.position='none')
+p2 = VlnPlot(scRNAauc, features = "CEBPB_147g", pt.size = 0, group.by="RNA_snn_res.0.15") + 
+  theme(legend.position='none')
+plotc = p1 + p2
+ggsave('scenic_seurat/Ridge-Vln_CEBPB_extended_2290g.png', plotc, width=10, height=8)
+
+library(ggplot2)
+library(pheatmap)
+cellInfo <- readRDS("int/cellInfo.Rds")
+celltype = subset(cellInfo,select = 'cluster')
+AUCmatrix <- t(AUCmatrix)
+BINmatrix <- t(BINmatrix)
+my.regulons <- c('ETS1_2372g','ETV7_981g','IRF7_239g','XBP1_854g','ATF4_37g',
+                 'KLF13_78g','ATF6_129g','CREB3L2_619g','TAGLN2_13g',
+                 'STAT1_extended_1808g','CEBPB_extended_2290g','IRF5_extended_422g',
+                 'SPI1_1606g','HMGA1_14g','SPIB_1866g','IRF8_348g','BCL11A_136g',
+                 'EBF1_40g','MAF_45g','BATF_131g','FOXP3_55g','TBX21_388g',
+                 'EOMES_extended_101g','TCF7_extended_31g','LEF1_extended_49g')
+myAUCmatrix <- AUCmatrix[rownames(AUCmatrix)%in%my.regulons,]
+myBINmatrix <- BINmatrix[rownames(BINmatrix)%in%my.regulons,]
+
+annotation_col_ordered<-cellInfo[order(cellInfo[,2],decreasing=F),]
+annotation_col_ordered<-subset(annotation_col_ordered,select = 'cluster')
+
+pheatmap(myAUCmatrix, show_colnames=F, annotation_col=annotation_col_ordered)
+pheatmap(myBINmatrix, show_colnames=F, annotation_col=celltype)
+
+
+p3<- pheatmap(myAUCmatrix, show_colnames=F, annotation_col=celltype,
+              filename = 'scenic_seurat/myAUCmatrix_heatmap.png',
+              width = 6, height = 5)
+
+ggsave("scenic_seurat2.0/p1.pdf",p1,width=10,height=8)
+
+regulonAUC<-readRDS("int/3.4_regulonAUC.Rds")
+rss<-calcRSS(AUC=getAUC(regulonAUC),cellAnnotation=cellInfo[colnames(scRNAauc),"cluster"])
+p2<-plotRSS(rss)
+write.csv(rss,file = "rss.csv")
+myrss<-read.csv("rss.csv")
+rownames(myrss)<- myrss[,1]
+rownames(myrss)
+myrss<-myrss[,-1]
+order=c("cluster0","cluster1","cluster2","cluster3")
+order
+myrss = myrss[,order]
+colnames(myrss)
+
+
+p3<- pheatmap(myrss)
+p3
+ggsave("scenic_seurat2.0/p3.pdf",p3,width=10,height=8)
+p4<- pheatmap(myrss, show_rownames=F,
+              width = 6, height = 5)
+ggsave("scenic_seurat2.0/p4.pdf",p4,width=4,height=8)
+p5<-pheatmap::pheatmap(myrss,show_rownames = T,scale='row',
+                       border_color = "white",fontsize_row = 12,
+                       color=colorRampPalette(c("#48055D","white","#29B374"))(50))
+ggsave("scenic_seurat2.0/p5.pdf",p5,width=4,height=12)
+
+
+notextended[1:5,1:5]
+my.regulons<-c("PPARG_extended (33g)",
+               "PPARG (18g)",
+               "CEBPZ_extended (2023g)",
+               "CEBPB_extended (5294g)",
+               "CEBPB (147g)",
+               "CEBPD_extended (458g)",
+               "CEBPD (137g)",
+               "SREBF1 (173g)",
+               "SREBF1_extended (1573g)",
+               "SREBF2_extended (1061g)",
+               "SREBF2 (20g)",
+               "CEBPG_extended (45g)",
+               "CEBPG (10g)")
+mynotextended <- myrss[rownames(myrss)%in%my.regulons,]
+p9<-pheatmap::pheatmap(mynotextended,show_rownames = T,scale='row',cluster_cols=F,cluster_rows=F,
+                       border_color = "white",fontsize_row = 6,fontsize_col = 6,
+                       color=colorRampPalette(c("#48055D","white","#29B374"))(50))
+ggsave("scenic_seurat2.0/p9.pdf",p9,width=1.8,height=2.2)
+
+
+myrss_top50<-read.csv("rss_top50.csv")
+rownames(myrss_top50)<- myrss_top50[,1]
+rownames(myrss_top50)
+myrss_top50<-myrss_top50[,-1]
+order=c("cluster0","cluster1","cluster2","cluster3")
+order
+myrss_top50s = myrss_top50[,order]
+colnames(myrss_top50)
+pheatmap::pheatmap(myrss_top50,show_rownames = T,scale='row',cluster_cols=F,cluster_rows=F,
+                       border_color = "white",fontsize_row = 6,
+                       color=colorRampPalette(c("#48055D","white","#29B374"))(50))
+
+
+expr<-AverageExpression(AdipocyteRecluster,assays ="RNA",slot = "data")[[1]]
+expr<-expr[rowSums(expr)>0,]
+expr<-as.matrix(expr)
+head(expr)
+
+library(ComplexHeatmap)
+
+marker_expr<-expr[c("PPARG",
+                    "CEBPZ",
+                    "CEBPB",
+                    "CEBPD",
+                    "SREBF1",
+                    "SREBF2",
+                    "CEBPG"),]
+
+pheatmap::pheatmap(marker_expr,show_colnames = T,cluster_cols=F,cluster_rows=F,border_color = "white",
+                  # gaps_col = c(5),gaps_row = c(4,19),
+                   scale = "row",angle_col = "45",fontsize_row = 10, 
+                   color=colorRampPalette(c("#48055D","white","#29B374"))(50))
+
+
+scenicOptions <- readRDS("int/scenicOptions.Rds")
+motifEnrichment_selfMotifs_wGenes <- loadInt(scenicOptions, "motifEnrichment_selfMotifs_wGenes")
+tableSubset <- motifEnrichment_selfMotifs_wGenes[highlightedTFs=="SREBF2 (20g)"]
+tableSubset 
+viewMotifs(tableSubset)
+#2、 output/Step2_regulonTargetsInfo.tsv in detail:
+regulons <- loadInt(scenicOptions, "regulons")
+regulons[c("PPARG",
+           "CEBPB",
+           "CEBPD",
+           "SREBF2 ",
+           "CEBPG")]
+regulonTargetsInfo <- loadInt(scenicOptions, "regulonTargetsInfo")
+tableSubset <- regulonTargetsInfo[TF=="MYC" & highConfAnnot==TRUE]
+viewMotifs(tableSubset)
+
+
+PPARG_marker_expr<-expr[c("AADAC", "ANGPTL4","BMPER","CYP1B1-AS1", "EDNRB","FABP4", "FGF10","GPC3",      
+                          "GPRC5C","LPL","LYSMD4","MEST","NR2F2-AS1","PON3","PPARG","PTH1R",     
+                          "SFMBT2","SRPX"),]
+
+pheatmap::pheatmap(PPARG_marker_expr,show_colnames = T,cluster_cols=F,cluster_rows=F,border_color = "white",
+                   # gaps_col = c(5),gaps_row = c(4,19),
+                   scale = "row",angle_col = "45",fontsize_row = 10, 
+                   color=colorRampPalette(c("#48055D","white","#29B374"))(50))
+
+CEBPB<-regulons[c("CEBPB")]
+CEBPB<-as.data.frame(CEBPB)
+CEBPB_marker_expr<-expr[CEBPB[,1],]
+
+pheatmap::pheatmap(CEBPB_marker_expr,show_colnames = T,cluster_cols=F,cluster_rows=F,border_color = "white",
+                   # gaps_col = c(5),gaps_row = c(4,19),
+                   scale = "row",angle_col = "45",fontsize_row = 6, # 行名字体大小设置
+                   color=colorRampPalette(c("#48055D","white","#29B374"))(50))
+
+CEBPD<-regulons[c("CEBPD")]
+CEBPD<-as.data.frame(CEBPD)
+CEBPD_marker_expr<-expr[CEBPD[,1],]
+
+pheatmap::pheatmap(CEBPD_marker_expr,show_colnames = T,cluster_cols=F,cluster_rows=F,border_color = "white",
+                   # gaps_col = c(5),gaps_row = c(4,19),
+                   scale = "row",angle_col = "45",fontsize_row = 6, 
+                   color=colorRampPalette(c("#48055D","white","#29B374"))(50))
+
+SREBF1<-regulons[c("SREBF1")]
+SREBF1<-as.data.frame(SREBF1)
+SREBF1_marker_expr<-expr[SREBF1[,1],]
+
+pheatmap::pheatmap(SREBF1_marker_expr,show_colnames = T,cluster_cols=F,cluster_rows=F,border_color = "white",
+                   # gaps_col = c(5),gaps_row = c(4,19),
+                   scale = "row",angle_col = "45",fontsize_row = 6,
+                   color=colorRampPalette(c("#48055D","white","#29B374"))(50))
+
+CEBPG<-regulons[c("CEBPG")]
+CEBPG<-as.data.frame(CEBPG)
+CEBPG_marker_expr<-expr[CEBPG[,1],]
+
+pheatmap::pheatmap(CEBPG_marker_expr,show_colnames = T,cluster_cols=F,cluster_rows=F,border_color = "white",
+                   # gaps_col = c(5),gaps_row = c(4,19),
+                   scale = "row",angle_col = "45",fontsize_row = 10, 
+                   color=colorRampPalette(c("#48055D","white","#29B374"))(50))
+
+
+
+myrss_top50<-read.csv("rss_top50.csv")
+rownames(myrss_top50)<- myrss_top50[,1]
+rownames(myrss_top50)
+myrss_top50<-myrss_top50[,-1]
+order=c("cluster0","cluster1","cluster2","cluster3")
+order
+myrss_top50s = myrss_top50[,order]
+colnames(myrss_top50)
+
+
+myrss_adipocyte<-myrss[c("PPARG_extended (33g)",#cluster0
+                           #"PPARG (18g)",#cluster0
+                           #"CEBPB_extended (5294g)",#cluster0
+                           "CEBPB (147g)",#cluster0
+                           "CEBPD_extended (458g)",#cluster0
+                           "CEBPD (137g)",#cluster0
+                           "SREBF1 (173g)",#cluster0
+                           "SREBF1_extended (1573g)",#cluster0
+                           "HMBOX1 (203g)",#cluster1
+                           "ATF1_extended (1713g)",#cluster1
+                           "KDM5A (326g)",#cluster1
+                           "KLF5 (15g)",#cluster2
+                           "EGR3_extended (51g)",#cluster2
+                           "KLF4 (11g)",#cluster2
+                           "IRF2_extended (37g)",#cluster3
+                           "ETV7 (18g)",#cluster3
+                           "LTF (13g)"#cluster3
+                           ),]
+
+pheatmap::pheatmap(myrss_adipocyte,show_rownames = T,scale='row',cluster_cols=F,cluster_rows=F,
+                   border_color = "white",fontsize_row = 12,
+                   color=colorRampPalette(c("#83BCD8","white","#C94A41"))(50))
+
+
+
+DotPlot(scRNAauc, features = c("PPARG_18g",#cluster0
+                               "PPARG_extended_33g",#cluster0
+                               "CEBPB_147g",#cluster0
+                             #  "CEBPB_extended_5294g",#cluster0
+                               "CEBPD_137g",#cluster0
+                               "CEBPD_extended_458g",#cluster0
+                               #"SREBF1_173g",#cluster0
+                              #"SREBF1_extended_1573g",#cluster0
+                               "HMBOX1_203g",#cluster1
+                               "ATF1_extended_1713g",#cluster1
+                               "KDM5A_326g",#cluster1
+                               "KLF5_15g",#cluster2
+                               "EGR3_extended_51g",#cluster2
+                               "KLF4_11g",#cluster2
+                               "IRF2_extended_37g",#cluster3
+                               "ETV7_18g",#cluster3
+                               "LTF_13g"#cluster3
+                               ), cols = c("#BFBFBE", "#C84440")) + RotatedAxis() 
+###FeaturePlot
+FeaturePlot(scRNAauc, features=c(#"PPARG_18g",#cluster0
+                                 "PPARG_extended_33g",#cluster0
+                                 "CEBPB_147g",#cluster0
+                                 #  "CEBPB_extended_5294g",#cluster0
+                                 "CEBPD_137g",#cluster0
+                                # "CEBPD_extended_458g",#cluster0
+                                 #"SREBF1_173g",#cluster0
+                                 #"SREBF1_extended_1573g",#cluster0
+                                 "HMBOX1_203g",#cluster1
+                                 #"ATF1_extended_1713g",#cluster1
+                                 #"KDM5A_326g",#cluster1
+                                 "KLF5_15g",#cluster2
+                                # "EGR3_extended_51g",#cluster2
+                                 #"KLF4_11g",#cluster2
+                                 "IRF2_extended_37g"#cluster3
+                                 #"ETV7_18g",#cluster3
+                                # "LTF_13g"#cluster3
+                                 ), label=T, reduction = 'umap', cols = c("#BFBFBE", "#C84440"))
+FeaturePlot(scRNAbin, features=c(#"PPARG_18g",#cluster0
+  "PPARG_extended_33g",#cluster0
+  "CEBPB_147g",#cluster0
+  #  "CEBPB_extended_5294g",#cluster0
+  "CEBPD_137g",#cluster0
+  # "CEBPD_extended_458g",#cluster0
+  #"SREBF1_173g",#cluster0
+  #"SREBF1_extended_1573g",#cluster0
+  "HMBOX1_203g",#cluster1
+  #"ATF1_extended_1713g",#cluster1
+  #"KDM5A_326g",#cluster1
+  "KLF5_15g",#cluster2
+  # "EGR3_extended_51g",#cluster2
+  #"KLF4_11g",#cluster2
+  "IRF2_extended_37g"#cluster3
+  #"ETV7_18g",#cluster3
+  # "LTF_13g"#cluster3
+), label=T, reduction = 'umap', cols = c("#BFBFBE", "#C84440"))
+#RidgePlot&VlnPlot
+RidgePlot(scRNAauc, features = c("PPARG_extended_33g",#cluster0
+                                 "CEBPB_147g",#cluster0
+                                 "CEBPD_137g",#cluster0
+                                 "HMBOX1_203g",#cluster1
+                                 "KLF5_15g",#cluster2
+                                 "IRF2_extended_37g"#cluster3
+                                 ), group.by="RNA_snn_res.0.15") + 
+  theme(legend.position='none')
+VlnPlot(scRNAauc, features =c("PPARG_extended_33g",#cluster0
+                              "CEBPB_147g",#cluster0
+                              "CEBPD_137g",#cluster0
+                              "HMBOX1_203g",#cluster1
+                              "KLF5_15g",#cluster2
+                              "IRF2_extended_37g"#cluster3
+), pt.size = 0, group.by="RNA_snn_res.0.15") + 
+  theme(legend.position='none')
+#RidgePlot&VlnPlot
+RidgePlot(scRNAbin, features = c("PPARG_extended_33g",#cluster0
+                                 "CEBPB_147g",#cluster0
+                                 "CEBPD_137g",#cluster0
+                                 "HMBOX1_203g",#cluster1
+                                 "KLF5_15g",#cluster2
+                                 "IRF2_extended_37g"#cluster3
+), group.by="RNA_snn_res.0.15") + 
+  theme(legend.position='none')
+VlnPlot(scRNAbin, features = "CEBPB_147g", pt.size = 0, group.by="RNA_snn_res.0.15") + 
+  theme(legend.position='none')
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
