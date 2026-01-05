@@ -1,0 +1,120 @@
+
+if(!require(multtest))install.packages("multtest")
+if(!require(Seurat))install.packages("Seurat")
+if(!require(dplyr))install.packages("dplyr")
+if(!require(mindr))install.packages("mindr")
+if(!require(mindr))install.packages("tidyverse")
+setwd("...")
+getwd()
+###
+scRNA_harmony<-readRDS("...")
+unique(scRNA_harmony$Recluster1.0)
+scRNA_harmony$Recluster1.0<- factor(scRNA_harmony$Recluster1.0, levels = c("Adipocyte1","Adipocyte2","B_cell" ,
+                                                                           "Cancer_cell", "Endothelial_cell","Fibroblast" ,                      
+                                                                           "Myeloid_cell","Normal_Epithelial","T_cell"))   
+
+Idents(scRNA_harmony)<-scRNA_harmony$Recluster1.0
+unique(scRNA_harmony$Recluster1.0) 
+DimPlot(scRNA_harmony, reduction = "umap",label = F,cols = c("#2E67A7","#CC510A","#FFECA5",
+                                                             "#F84E56","#BDA257","#BC7FAF",
+                                                             "#FFAD79","#6AA5D2","#8BC4A5"))
+
+table(Idents(scRNA_harmony))
+table(scRNA_harmony$Recluster1.0)
+prop.table(table(Idents(scRNA_harmony)))
+table(Idents(scRNA_harmony),scRNA_harmony$Recluster1.0)
+Cellratio <- prop.table(table(scRNA_harmony$Recluster1.0, scRNA_harmony$Patient_ID), margin = 2)
+Cellratio <- as.data.frame(Cellratio)
+
+allcolour=c("#2E67A7","#CC510A","#FFECA5",
+            "#F84E56","#BDA257","#BC7FAF",
+            "#FFAD79","#6AA5D2","#8BC4A5")
+library(ggplot2)
+p<-ggplot(Cellratio) + 
+  geom_bar(aes(x =Var2, y= Freq, fill = Var1),stat = "identity",width = 0.6,size = 0.3,colour = '#222222')+ 
+  theme_classic() +
+  labs(x='Sample',y = 'Ratio')+
+  scale_fill_manual(values = allcolour)+
+  theme(panel.border = element_rect(fill=NA,color="black", size=0.5, linetype="solid"))
+
+####marker
+StackedVlnPlot(scRNA_harmony, c("APOD",
+                                "PDGFRA","SCARA5","DPT",
+                                "FABP4","CD36","PPARG","LEPR",
+                                "FZD4","SEMA5A","RASD1","CXCR4",
+                                "DLK1","ICAM1","ITGAV",
+                                "CD79A","MZB1","MS4A1",   #B cell
+                                "CD24","KRT19","SCGB2A2",#cancer cell
+                                "CLDN5","FLT1","RAMP2",#Endothelial cell
+                                "COL1A1","PDGFRB","THY1", #Fibroblast cell
+                                "LYZ","CD68","TYROBP",  #Myeloid cell
+                                "CD3D","CD3E","CD2"#T cell
+), pt.size=0,log = TRUE)
+
+StackedVlnPlot(scRNA_harmony, c("APOD",###Adipocyte
+                                "PDGFRA","SCARA5","DPT",###Adipocyte1
+                                "FABP4","CD36","PPARG","LEPR",###Adipocyte2
+                                "CD79A","MZB1","MS4A1",   #B cell
+                                "CD24","KRT19","SCGB2A2",#cancer cell
+                                "CLDN5","FLT1","RAMP2",#Endothelial cell
+                                "COL1A1","PDGFRB","THY1", #Fibroblast cell
+                                "LYZ","CD68","TYROBP",  #Myeloid cell
+                                "CD3D","CD3E","CD2"#T cell
+                                
+), pt.size=0,log = TRUE, color.use =c("#2E67A7","#CC510A","#FFECA5",
+                                      "#F84E56","#BDA257","#BC7FAF",
+                                      "#FFAD79","#6AA5D2","#8BC4A5"))
+
+expr<-AverageExpression(scRNA_harmony,assays ="RNA",slot = "data")[[1]]
+expr<-expr[rowSums(expr)>0,]
+expr<-as.matrix(expr)
+head(expr)
+
+
+library(ComplexHeatmap)
+marker_expr<-expr[c("APOD",###Adipocyte
+                    "PDGFRA","SCARA5","DPT",###Adipocyte1
+                    "FABP4","CD36","PPARG","LEPR",###Adipocyte2
+                    "CD79A","MZB1","MS4A1",   #B cell
+                    "CD24","KRT19","SCGB2A2",#cancer cell
+                    "CLDN5","FLT1","RAMP2",#Endothelial cell
+                    "COL1A1","PDGFRB","THY1", #Fibroblast cell
+                    "LYZ","CD68","TYROBP",  #Myeloid cell
+                    "CD3D","CD3E","CD2" ),]#T cell
+marker_expr<-as.data.frame(marker_expr)
+marker_expr0<-marker_expr[,c("Adipocyte1",###Adipocyte1
+                    "Adipocyte2",###Adipocyte2
+                    "B_cell",   #B cell
+                    "Cancer_cell",#cancer cell
+                    "Endothelial_cell",#Endothelial cell
+                    "Fibroblast", #Fibroblast cell
+                    "Myeloid_cell",  #Myeloid cell
+                    "T_cell")]#T cell
+
+pheatmap::pheatmap(marker_expr0,show_colnames = T,cluster_cols=F,cluster_rows=F,border_color = "white",
+                   scale = "row",angle_col = "45",fontsize_row = 10, 
+                   color=colorRampPalette(c("#48055D","white","#29B374"))(50))
+
+FeaturePlot(scRNA_harmony, features = c("APOD",###Adipocyte
+                    "PDGFRA",###Adipocyte1
+                    "FABP4",
+                    "CD79A",  #B cell
+                    "CD24",#cancer cell
+                    "CLDN5",#Endothelial cell
+                    "COL1A1",#Fibroblast cell
+                    "LYZ", #Myeloid cell
+                    "CD3D"),ncol = 3,label = F,cols =c("#BFBFBF","#D03331"))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
