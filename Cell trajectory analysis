@@ -1,0 +1,115 @@
+setwd("...")
+library(monocle)
+if(!require(multtest))install.packages("multtest")
+if(!require(Seurat))install.packages("Seurat")
+if(!require(dplyr))install.packages("dplyr")
+if(!require(mindr))install.packages("mindr")
+if(!require(mindr))install.packages("tidyverse")
+if(!require(patchwork))install.packages("patchwork")
+if(!require(R.utils))install.packages("R.utils")
+
+scRNA_harmony<-readRDS("...")
+data <- as(as.matrix(scRNA_harmony@assays$RNA@counts),"sparseMatrix")
+data[1:4,1:4]
+pd<- new("AnnotatedDataFrame", data = scRNA_harmony@meta.data)
+fData <- data.frame(gene_short_name = row.names(data), row.names = row.names(data))
+fd<-new("AnnotatedDataFrame", data = fData)
+mycds<-newCellDataSet(data,
+                      phenoData = pd,
+                      featureData = fd,
+                      expressionFamily = negbinomial.size())
+
+
+as.data.frame(mycds@phenoData@data)[1:4,1:4]
+#names(pbmcTNBCcancercell@meta.data)
+names(mycds@phenoData@data)
+class(mycds@assayData$exprs)
+
+library(Seurat)
+myseurat <-CreateSeuratObject(counts = mycds@assayData$exprs,
+                              meta.data = mycds@phenoData@data)
+class(myseurat)
+
+mycds<-estimateSizeFactors(mycds)
+mycds<-estimateDispersions(mycds)
+
+mycds<-detectGenes(mycds, min_expr = 0.1)
+head(fData(mycds))
+mycds_expressed_genes <-row.names(subset(fData(mycds),num_cells_expressed >=10))
+length(mycds_expressed_genes)
+mycds_expressed_genes[1:5]
+mycds<-mycds[mycds_expressed_genes,]
+length(row.names(scRNA_harmony))
+future::plan("multiprocess",workers=10)
+seu.marker<-FindAllMarkers(scRNA_harmony)
+
+disp_table <- dispersionTable(mycds)
+disp.genes <- subset(disp_table, mean_expression >= 0.1 & dispersion_empirical >= 1 * dispersion_fit)$gene_id
+mycds <- setOrderingFilter(mycds, disp.genes)
+plot_ordering_genes(mycds)
+
+Idents(myseurat)<-myseurat$RNA_snn_res.0.15
+deg.cluster <- FindAllMarkers(myseurat)
+diff.genes <- subset(deg.cluster,p_val_adj<0.05)$gene
+mycds <- setOrderingFilter(mycds, diff.genes)
+plot_ordering_genes(HSMM)
+
+mycds<- reduceDimension(mycds, max_components = 2, method = "DDRtree")
+saveRDS(mycds, file = "mycds.RDS")
+
+cols_1<-c("#FF92AB","#AC85BF","#DDDD6E","#79DBDE")
+plot_cell_trajectory(mycds, color_by = "RNA_snn_res.0.15") +  scale_colour_manual(values = cols_1)
+plot_cell_trajectory(mycds, color_by = "State")
+plot_cell_trajectory(mycds, color_by = "Pseudotime")
+
+ori.pse <- plot_cell_trajectory(mycds, color_by = "Pseudotime")
+mycds <-orderCells(mycds, reverse = T)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
